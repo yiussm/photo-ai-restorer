@@ -1,10 +1,8 @@
-name: Build
+name: Build & Release
 
 on:
   push:
     branches: [main]
-  release:
-    types: [created]
 
 jobs:
   build:
@@ -40,17 +38,12 @@ jobs:
         shell: bash
         run: |
           mkdir -p esrgan/models
-          # 下载平台对应二进制
           curl -L -o esrgan/esrgan.zip \
             "https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases/download/v0.2.0/${{ matrix.esrgan_zip }}"
           unzip -o esrgan/esrgan.zip -d esrgan/
-          # zip 解压到子目录，移动到根层级
           find esrgan -name "${{ matrix.esrgan_bin }}" -not -path "esrgan/${{ matrix.esrgan_bin }}" -exec mv {} esrgan/ \; || true
           chmod +x "esrgan/${{ matrix.esrgan_bin }}" || true
-          # 将仓库中的模型复制过来
           cp -r 源码/models/* esrgan/models/
-          echo "=== Binary ===" && ls -la "esrgan/${{ matrix.esrgan_bin }}"
-          echo "=== Models ===" && ls -la esrgan/models/
 
       - name: Build macOS app
         if: matrix.os == 'macos-latest'
@@ -59,6 +52,7 @@ jobs:
             --add-binary="esrgan/${{ matrix.esrgan_bin }}:esrgan/" \
             --add-data="esrgan/models:esrgan/models" \
             源码/photo_restorer.py
+          cd dist && zip -r "../照片智能修复工具-macOS.zip" "照片智能修复工具.app"
 
       - name: Build Windows exe
         if: matrix.os == 'windows-latest'
@@ -67,9 +61,56 @@ jobs:
             --add-binary="esrgan/${{ matrix.esrgan_bin }};esrgan/" `
             --add-data="esrgan/models;esrgan/models" `
             源码/photo_restorer.py
+          Compress-Archive -Path "dist/照片智能修复工具/*" -DestinationPath "照片智能修复工具-Windows.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: 照片智能修复工具-${{ matrix.artifact }}
-          path: dist/
+          path: 照片智能修复工具-${{ matrix.artifact }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 照片智能修复工具-*
+          path: release-assets
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          LAST_TAG=$(git tag --sort=-creatordate | head -1)
+          if [ -n "$LAST_TAG" ]; then
+            RANGE="${LAST_TAG}..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+          echo "## 📝 更新内容" > /tmp/notes.md
+          echo "" >> /tmp/notes.md
+          git log $RANGE --pretty=format:"- %s (%h)" --no-merges >> /tmp/notes.md || echo "- 初始版本" >> /tmp/notes.md
+          echo "" >> /tmp/notes.md
+          echo "---" >> /tmp/notes.md
+          echo "**构建时间:** $(date '+%Y-%m-%d %H:%M')" >> /tmp/notes.md
+          cat /tmp/notes.md
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/notes.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Update latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 照片智能修复工具 - 最新版
+          body: ${{ steps.notes.outputs.body }}
+          files: release-assets/*/*.zip
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
