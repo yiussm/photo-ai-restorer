@@ -37,16 +37,20 @@ jobs:
           pip install pyinstaller
 
       - name: Download Real-ESRGAN binary
+        shell: bash
         run: |
           mkdir -p esrgan/models
+          # 下载平台对应二进制
           curl -L -o esrgan/esrgan.zip \
             "https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases/download/v0.2.0/${{ matrix.esrgan_zip }}"
           unzip -o esrgan/esrgan.zip -d esrgan/
+          # zip 解压到子目录，移动到根层级
+          find esrgan -name "${{ matrix.esrgan_bin }}" -not -path "esrgan/${{ matrix.esrgan_bin }}" -exec mv {} esrgan/ \; || true
           chmod +x "esrgan/${{ matrix.esrgan_bin }}" || true
           # 将仓库中的模型复制过来
           cp -r 源码/models/* esrgan/models/
-          ls -la esrgan/
-          ls -la esrgan/models/
+          echo "=== Binary ===" && ls -la "esrgan/${{ matrix.esrgan_bin }}"
+          echo "=== Models ===" && ls -la esrgan/models/
 
       - name: Build macOS app
         if: matrix.os == 'macos-latest'
