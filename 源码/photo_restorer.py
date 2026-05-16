@@ -33,11 +33,17 @@ FONT_SM = ("", 11)
 FONT_MONO = ("", 11)
 
 # Real-ESRGAN 配置 - 支持开发模式和 PyInstaller 打包模式
-def _get_bundle_dir():
-    """获取应用目录（开发模式=源码目录，打包模式=MEIPASS）"""
-    if getattr(sys, 'frozen', False):
-        return Path(sys._MEIPASS)
-    return Path(__file__).resolve().parent
+import urllib.request
+import zipfile
+import shutil
+
+ESRGAN_RELEASE = "https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases/download/v0.2.0"
+
+def _get_esrgan_dir():
+    """获取 Real-ESRGAN 工作目录"""
+    d = Path.home() / ".photo_restorer" / "esrgan"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 def _find_esrgan():
     """查找 Real-ESRGAN 二进制和模型目录"""
@@ -58,7 +64,86 @@ def _find_esrgan():
             m = tools / "models"
             return p, m
     
+    # 3. 自动下载目录 ~/.photo_restorer/esrgan
+    app_dir = _get_esrgan_dir()
+    for name in ["realesrgan-ncnn-vulkan", "realesrgan-ncnn-vulkan.exe"]:
+        p = app_dir / name
+        if p.exists():
+            m = app_dir / "models"
+            return p, m
+    
     return None, None
+
+def _get_platform_suffix():
+    """获取平台文件名后缀"""
+    if sys.platform == 'darwin':
+        return 'macos', 'realesrgan-ncnn-vulkan'
+    elif sys.platform == 'win32':
+        return 'windows', 'realesrgan-ncnn-vulkan.exe'
+    else:
+        return 'ubuntu', 'realesrgan-ncnn-vulkan'
+
+def setup_esrgan(progress_callback=None):
+    """首次运行：自动下载 Real-ESRGAN 二进制和模型"""
+    dst = _get_esrgan_dir()
+    platform, binary_name = _get_platform_suffix()
+    binary_path = dst / binary_name
+    models_dir = dst / "models"
+    
+    # 检查是否已安装
+    if binary_path.exists() and models_dir.exists() and any(models_dir.glob("*.bin")):
+        return True, "已就绪"
+    
+    try:
+        # 1. 下载二进制
+        zip_name = f"realesrgan-ncnn-vulkan-v0.2.0-{platform}.zip"
+        zip_path = dst / zip_name
+        
+        if not binary_path.exists():
+            if progress_callback:
+                progress_callback(f"下载 Real-ESRGAN ({platform})...")
+            url = f"{ESRGAN_RELEASE}/{zip_name}"
+            urllib.request.urlretrieve(url, zip_path)
+            
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(dst)
+            
+            if not binary_path.exists():
+                # 可能提取到了子目录
+                for f in dst.rglob(binary_name):
+                    shutil.move(str(f), str(binary_path))
+                    break
+            
+            os.chmod(binary_path, 0o755)
+            zip_path.unlink(missing_ok=True)
+        
+        # 2. 下载模型
+        models_dir.mkdir(exist_ok=True)
+        models_needed = ["realesrgan-x4plus", "realesrgan-x4plus-anime"]
+        
+        for model in models_needed:
+            for ext in ['param', 'bin']:
+                model_file = models_dir / f"{model}.{ext}"
+                if not model_file.exists():
+                    if progress_callback:
+                        progress_callback(f"下载模型 {model}.{ext}...")
+                    try:
+                        url = f"{ESRGAN_RELEASE}/{model}.{ext}"
+                        urllib.request.urlretrieve(url, model_file)
+                    except Exception:
+                        pass  # 模型文件可能不在 release 中
+        
+        # 检查核心模型是否到位
+        if (models_dir / "realesrgan-x4plus.param").exists() and \
+           (models_dir / "realesrgan-x4plus.bin").exists():
+            return True, "安装完成"
+        else:
+            return False, "模型下载失败，请手动安装"
+            
+    except urllib.error.URLError:
+        return False, "网络错误，无法下载"
+    except Exception as e:
+        return False, f"安装失败: {e}"
 
 ESRGAN_BIN, MODELS_DIR = _find_esrgan()
 CONFIG_FILE = Path.home() / ".qclaw" / "photo_restorer_config.json"
@@ -250,14 +335,26 @@ class App(ctk.CTk):
         }, ensure_ascii=False))
     
     def _build_ui(self):
+        global ESRGAN_BIN, MODELS_DIR
+        
         if not ESRGAN_BIN:
-            ctk.CTkLabel(self, text="⚠️ Real-ESRGAN 未找到，请先安装\n"
-                         "参考: github.com/xinntao/Real-ESRGAN-ncnn-vulkan",
-                         font=("", 14), text_color="#e74c3c", wraplength=500).pack(pady=40)
-            self.start_btn = ctk.CTkButton(self, text="退出", command=self.destroy,
-                                           font=FONT_TITLE, height=48)
-            self.start_btn.pack(pady=10, padx=20, fill="x")
+            self.configure(fg_color=BG)
+            ctk.CTkLabel(self, text="📦 Real-ESRGAN 未安装",
+                         font=FONT_TITLE, text_color=ACCENT).pack(pady=(60, 10))
+            ctk.CTkLabel(self, text="首次使用需要下载 AI 修复引擎（约50MB）",
+                         font=FONT_MAIN, text_color=FG).pack(pady=5)
+            self.setup_label = ctk.CTkLabel(self, text="", font=FONT_SM, text_color="#7f8c8d",
+                                             wraplength=500)
+            self.setup_label.pack(pady=5)
+            self.setup_btn = ctk.CTkButton(self, text="⬇️ 一键安装",
+                                           command=self._run_setup,
+                                           font=FONT_TITLE, height=48,
+                                           fg_color=ACCENT, hover_color=ACCENT_HOVER)
+            self.setup_btn.pack(pady=10)
+            ctk.CTkLabel(self, text="也可手动安装：参考 README.md",
+                         font=("", 10), text_color="#bdc3c7").pack(pady=5)
             return
+
         # 整体背景
         self.configure(fg_color=BG)
         
@@ -428,6 +525,29 @@ class App(ctk.CTk):
         self.processing = False
         self.start_btn.configure(state="normal", text="🚀 开始修复")
         self.status.configure(text="处理完成")
+
+    def _run_setup(self):
+        global ESRGAN_BIN, MODELS_DIR
+        self.setup_btn.configure(state="disabled", text="⏳ 下载中...")
+        
+        def on_progress(msg):
+            self.setup_label.configure(text=msg)
+            self.update()
+        
+        def worker():
+            ok, msg = setup_esrgan(on_progress)
+            ESRGAN_BIN, MODELS_DIR = _find_esrgan()
+            
+            if ok and ESRGAN_BIN:
+                # 重建 UI
+                for w in self.winfo_children():
+                    w.destroy()
+                self._build_ui()
+            else:
+                self.setup_btn.configure(state="normal", text="❌ 重试")
+                self.setup_label.configure(text=f"安装失败: {msg}")
+        
+        Thread(target=worker, daemon=True).start()
 
 
 if __name__ == "__main__":
