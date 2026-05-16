@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [created]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: macos
+            esrgan_zip: realesrgan-ncnn-vulkan-20220424-macos.zip
+            esrgan_bin: realesrgan-ncnn-vulkan
+          - os: windows-latest
+            artifact: windows
+            esrgan_zip: realesrgan-ncnn-vulkan-20220424-windows.zip
+            esrgan_bin: realesrgan-ncnn-vulkan.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Download Real-ESRGAN
+        run: |
+          mkdir -p esrgan/models
+          # 下载平台对应二进制
+          curl -L -o esrgan/esrgan.zip \
+            "https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases/download/v0.2.0/${{ matrix.esrgan_zip }}"
+          unzip -o esrgan/esrgan.zip -d esrgan/
+          chmod +x "esrgan/${{ matrix.esrgan_bin }}" || true
+          # 下载模型文件
+          BASE="https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases/download/v0.2.0"
+          for m in realesrgan-x4plus realesrgan-x4plus-anime realesr-animevideov3-x2 realesr-animevideov3-x3 realesr-animevideov3-x4; do
+            curl -sSL -o "esrgan/models/${m}.param" "${BASE}/${m}.param" || true
+            curl -sSL -o "esrgan/models/${m}.bin" "${BASE}/${m}.bin" || true
+          done
+          ls -la esrgan/ esrgan/models/
+
+      - name: Build macOS app
+        if: matrix.os == 'macos-latest'
+        run: |
+          pyinstaller --name="照片智能修复工具" --windowed --onedir --noconfirm --clean \
+            --add-binary="esrgan/${{ matrix.esrgan_bin }}:esrgan/" \
+            --add-data="esrgan/models:esrgan/models" \
+            photo_restorer.py
+
+      - name: Build Windows exe
+        if: matrix.os == 'windows-latest'
+        run: |
+          pyinstaller --name="照片智能修复工具" --windowed --onedir --noconfirm --clean `
+            --add-binary="esrgan/${{ matrix.esrgan_bin }};esrgan/" `
+            --add-data="esrgan/models;esrgan/models" `
+            photo_restorer.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 照片智能修复工具-${{ matrix.artifact }}
+          path: dist/
