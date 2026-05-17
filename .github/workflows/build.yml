@@ -12,8 +12,12 @@ jobs:
     strategy:
       matrix:
         include:
+          - os: macos-13
+            artifact: macos-x64
+            esrgan_zip: realesrgan-ncnn-vulkan-v0.2.0-macos.zip
+            esrgan_bin: realesrgan-ncnn-vulkan
           - os: macos-latest
-            artifact: macos
+            artifact: macos-arm64
             esrgan_zip: realesrgan-ncnn-vulkan-v0.2.0-macos.zip
             esrgan_bin: realesrgan-ncnn-vulkan
           - os: windows-latest
@@ -49,28 +53,30 @@ jobs:
           cp -r 源码/models/* esrgan/models/
 
       - name: Build macOS app
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: |
           pyinstaller --name="照片智能修复工具" --windowed --onedir --noconfirm --clean \
             --add-binary="esrgan/${{ matrix.esrgan_bin }}:esrgan/" \
             --add-data="esrgan/models:esrgan/models" \
             源码/photo_restorer.py
-          cd dist && zip -r "../照片智能修复工具-macOS.zip" "照片智能修复工具.app"
+          cd dist && zip -r "../photo-ai-restorer-${{ matrix.artifact }}.zip" "照片智能修复工具.app"
 
       - name: Build Windows exe
-        if: matrix.os == 'windows-latest'
+        if: runner.os == 'Windows'
         run: |
           pyinstaller --name="照片智能修复工具" --windowed --onedir --noconfirm --clean `
             --add-binary="esrgan/${{ matrix.esrgan_bin }};esrgan/" `
             --add-data="esrgan/models;esrgan/models" `
             源码/photo_restorer.py
-          Compress-Archive -Path "dist/照片智能修复工具/*" -DestinationPath "照片智能修复工具-Windows.zip"
+          Compress-Archive -Path "dist/照片智能修复工具/*" -DestinationPath "photo-ai-restorer-windows.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 照片智能修复工具-${{ matrix.artifact }}
-          path: 照片智能修复工具-${{ matrix.artifact }}.zip
+          name: photo-ai-restorer-${{ matrix.artifact }}
+          path: |
+            photo-ai-restorer-${{ matrix.artifact }}.zip
+            photo-ai-restorer-windows.zip
 
   release:
     needs: build
@@ -84,7 +90,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: 照片智能修复工具-*
+          pattern: photo-ai-restorer-*
           path: release-assets
 
       - name: Generate release notes
