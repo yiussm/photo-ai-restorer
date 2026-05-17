@@ -181,6 +181,19 @@ def detect_scene(img):
 
 
 # ============ Real-ESRGAN 处理 =============
+def _safe_path(p):
+    """Windows 中文路径安全处理：转为短路径名避免乱码"""
+    if sys.platform != 'win32':
+        return str(p)
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(512)
+        ctypes.windll.kernel32.GetShortPathNameW(str(p), buf, 512)
+        short = buf.value
+        return short if short else str(p)
+    except Exception:
+        return str(p)
+
 def process_realesrgan(input_path, output_path, scale=2, model_name=None):
     """
     调用 Real-ESRGAN-ncnn-vulkan 处理图片
@@ -199,21 +212,41 @@ def process_realesrgan(input_path, output_path, scale=2, model_name=None):
     if not (model_path.with_suffix('.param')).exists():
         return False, f"模型文件未找到: {model_path}.param"
     
+    # Windows 中文路径处理：复制到临时 ASCII 路径处理
+    import tempfile
+    tmp_in = None
+    tmp_out = None
+    real_input = input_path
+    real_output = output_path
+    
+    if sys.platform == 'win32':
+        tmp_dir = Path(tempfile.gettempdir()) / "photo_restorer"
+        tmp_dir.mkdir(exist_ok=True)
+        tmp_in = tmp_dir / "_input.jpg"
+        tmp_out = tmp_dir / "_output.jpg"
+        import shutil
+        shutil.copy2(str(input_path), str(tmp_in))
+        real_input = tmp_in
+        real_output = tmp_out
+    
     cmd = [
-        str(ESRGAN_BIN),
-        "-i", str(input_path),
-        "-o", str(output_path),
-        "-m", str(MODELS_DIR),
+        _safe_path(ESRGAN_BIN),
+        "-i", _safe_path(real_input),
+        "-o", _safe_path(real_output),
+        "-m", _safe_path(MODELS_DIR),
         "-n", model_name,
         "-s", str(scale),
         "-f", "jpg",
-        "-t", "480",       # tile size，避免拼接错位
-        "-g", "0",        # GPU ID，0=自动选择
+        "-t", "480",
+        "-g", "0",
     ]
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode == 0:
+            # Windows: 从临时路径复制回目标
+            if sys.platform == 'win32' and tmp_out and tmp_out.exists():
+                shutil.copy2(str(tmp_out), str(output_path))
             return True, "ok"
         else:
             return False, result.stderr or "处理失败"
@@ -221,12 +254,23 @@ def process_realesrgan(input_path, output_path, scale=2, model_name=None):
         return False, "处理超时"
     except Exception as e:
         return False, str(e)
+    finally:
+        # 清理临时文件
+        if tmp_in and tmp_in.exists():
+            tmp_in.unlink(missing_ok=True)
+        if tmp_out and tmp_out.exists():
+            tmp_out.unlink(missing_ok=True)
 
 
 # ============ OpenCV 预处理/后处理 =============
 def cv2_enhance(input_path, output_path, scene="general"):
     """CV2 增强（Real-ESRGAN 之前/之后的处理）"""
-    img = cv2.imread(str(input_path))
+    # 使用 np.fromfile 解决 Windows 中文路径
+    try:
+        data = np.fromfile(str(input_path), dtype=np.uint8)
+        img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:
+        img = cv2.imread(str(input_path))
     if img is None:
         return False
     
@@ -236,23 +280,30 @@ def cv2_enhance(input_path, output_path, scene="general"):
     denoised = cv2.fastNlMeansDenoisingColored(img, None, 3, 3, 7, 21)
     
     if scene == "portrait":
-        # 人像：柔和锐化
         kernel = np.array([[-0.12, -0.12, -0.12],
                            [-0.12,  1.6, -0.12],
                            [-0.12, -0.12, -0.12]])
     elif scene == "landscape":
-        # 风景：强锐化
         kernel = np.array([[-0.18, -0.18, -0.18],
                            [-0.18,  1.9, -0.18],
                            [-0.18, -0.18, -0.18]])
     else:
-        # 通用
         kernel = np.array([[-0.15, -0.15, -0.15],
                            [-0.15,  1.75, -0.15],
                            [-0.15, -0.15, -0.15]])
     
     enhanced = cv2.filter2D(denoised, -1, kernel)
-    cv2.imwrite(str(output_path), enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    # 使用 imencode 解决 Windows 中文路径写入
+    ext = Path(output_path).suffix.lower()
+    if ext in ('.jpg', '.jpeg'):
+        params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+        encode_ext = '.jpg'
+    else:
+        params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
+        encode_ext = '.png'
+    success, buf = cv2.imencode(encode_ext, enhanced, params)
+    if success:
+        buf.tofile(str(output_path))
     return True
 
 
@@ -261,8 +312,15 @@ def process_single(input_file, output_dir, input_root, scale, mode, log_func):
     """处理单张图片"""
     input_path = Path(input_file)
     
-    # 场景检测
-    img = cv2.imread(str(input_path))
+    # 场景检测（使用 np.fromfile 解决 Windows 中文路径问题）
+    try:
+        data = np.fromfile(str(input_path), dtype=np.uint8)
+        img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:
+        img = None
+    if img is None:
+        # fallback
+        img = cv2.imread(str(input_path))
     if img is None:
         return False, "无法读取"
     
